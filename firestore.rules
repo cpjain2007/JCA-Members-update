@@ -1,0 +1,31 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Master list: public read for the lookup UI (writes only via Admin import script).
+    match /members/{memberId} {
+      allow read: if true;
+      allow create, update: if request.resource.data.keys().hasAll(
+          ['membershipNumber', 'firstName', 'lastName']
+        )
+        && (request.resource.data.membershipNumber is int
+          || request.resource.data.membershipNumber is float)
+        && request.resource.data.firstName is string
+        && request.resource.data.lastName is string;
+      allow delete: if false;
+    }
+
+    // Track only changed/new members for easy export.
+    match /member_changes/{memberId} {
+      allow read: if false;
+      allow create, update: if request.resource.data.keys().hasAll(
+          ['membershipNumber', 'firstName', 'lastName', 'changeType']
+        )
+        && (request.resource.data.membershipNumber is int
+          || request.resource.data.membershipNumber is float)
+        && request.resource.data.firstName is string
+        && request.resource.data.lastName is string
+        && request.resource.data.changeType is string;
+      allow delete: if false;
+    }
+  }
+}

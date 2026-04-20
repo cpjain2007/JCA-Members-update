@@ -1,0 +1,17 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.env
+.python-version
+
+config/import.json
+serviceAccount.json
+**/serviceAccount*.json
+web/node_modules/
+web/dist/
+web/.env
+web/.env.local
+web/.env.*.local

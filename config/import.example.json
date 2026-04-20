@@ -1,0 +1,6 @@
+{
+  "excel_path": "C:/Users/admin/Projects/JCA_Data_Update/Master_List_Format_1500_Records.xlsx",
+  "sheet_name": "Master List Format",
+  "first_data_row": 2,
+  "firestore_collection": "members"
+}
