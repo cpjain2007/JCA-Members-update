@@ -20,6 +20,8 @@ const MEMBERS_COLLECTION = "members";
 const MEMBER_CHANGES_COLLECTION = "member_changes";
 const DEVICE_STORAGE_KEY = "jca_member_device_id";
 
+type View = "search" | "results" | "form";
+
 function getOrCreateDeviceId(): string {
   try {
     const existing = window.localStorage.getItem(DEVICE_STORAGE_KEY);
@@ -129,6 +131,23 @@ async function writeMemberChangeSnapshot(params: {
   );
 }
 
+function initials(firstName: string | null, lastName: string | null): string {
+  const f = (firstName ?? "").trim();
+  const l = (lastName ?? "").trim();
+  const a = f ? f[0] : "";
+  const b = l ? l[0] : "";
+  return (a + b || "?").toUpperCase();
+}
+
+function displayName(m: Member): string {
+  const parts = [m.firstName, m.lastName].filter(Boolean).map((s) => String(s).trim());
+  return parts.join(" ") || "(unnamed member)";
+}
+
+function primaryPhone(m: Member): string {
+  return m.cellPhone || m.homePhone || m.businessPhone || m.alternatePhone || "";
+}
+
 export function App() {
   const [initError, setInitError] = useState<string | null>(null);
   const [appReady, setAppReady] = useState(false);
@@ -140,7 +159,10 @@ export function App() {
   );
   const [loadError, setLoadError] = useState<string | null>(null);
 
+  const [view, setView] = useState<View>("search");
   const [query, setQuery] = useState("");
+  const [showAllResults, setShowAllResults] = useState(false);
+
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isCreateMode, setIsCreateMode] = useState(false);
   const [form, setForm] = useState<MemberForm>(emptyForm());
@@ -166,8 +188,8 @@ export function App() {
     try {
       const snap = await getDocs(collection(db(), MEMBERS_COLLECTION));
       const list: Member[] = [];
-      snap.forEach((doc) => {
-        list.push(memberDocToMember(doc.id, doc.data() as Record<string, unknown>));
+      snap.forEach((d) => {
+        list.push(memberDocToMember(d.id, d.data() as Record<string, unknown>));
       });
       list.sort((a, b) => {
         const na = a.membershipNumber ?? 0;
@@ -188,7 +210,9 @@ export function App() {
   }, [appReady, refreshMembers]);
 
   const filtered = useMemo(() => {
-    return members.filter((m) => memberMatchesQuery(m, query));
+    const q = query.trim();
+    if (!q) return [] as Member[];
+    return members.filter((m) => memberMatchesQuery(m, q));
   }, [members, query]);
 
   const selected = useMemo(
@@ -199,16 +223,41 @@ export function App() {
   useEffect(() => {
     if (selected) {
       setForm(formFromMember(selected));
-    } else {
+    } else if (!isCreateMode) {
       setForm(emptyForm());
     }
-  }, [selected]);
+  }, [selected, isCreateMode]);
 
-  const onSelectRow = (m: Member) => {
+  const goSearch = () => {
+    setView("search");
+    setQuery("");
+    setSelectedId(null);
+    setIsCreateMode(false);
+    setShowAllResults(false);
+    setSaveState("idle");
+    setSaveMessage(null);
+  };
+
+  const goResults = () => {
+    setView("results");
+    setSelectedId(null);
+    setIsCreateMode(false);
+    setSaveState("idle");
+    setSaveMessage(null);
+  };
+
+  const onSubmitSearch = () => {
+    if (!query.trim()) return;
+    setShowAllResults(false);
+    setView("results");
+  };
+
+  const onSelectMember = (m: Member) => {
     setSelectedId(m.id);
     setIsCreateMode(false);
     setSaveState("idle");
     setSaveMessage(null);
+    setView("form");
   };
 
   const onStartCreate = () => {
@@ -223,6 +272,7 @@ export function App() {
     });
     setSaveState("idle");
     setSaveMessage(null);
+    setView("form");
   };
 
   const onSave = async () => {
@@ -262,7 +312,7 @@ export function App() {
         });
 
         setSaveState("ok");
-        setSaveMessage("New user added and tracked for export.");
+        setSaveMessage("New member added and tracked for export.");
         setIsCreateMode(false);
         setSelectedId(String(form.membershipNumber));
         await refreshMembers();
@@ -280,7 +330,7 @@ export function App() {
     }
     if (String(form.membershipNumber) !== selectedId) {
       setSaveState("error");
-      setSaveMessage("Membership number cannot be changed for an existing user.");
+      setSaveMessage("Membership number cannot be changed for an existing member.");
       return;
     }
 
@@ -303,7 +353,7 @@ export function App() {
         changeType: "modified",
       });
       setSaveState("ok");
-      setSaveMessage("Member updated and tracked for export.");
+      setSaveMessage("Changes saved and tracked for export.");
       await refreshMembers();
     } catch (e) {
       setSaveState("error");
@@ -319,316 +369,605 @@ export function App() {
 
   if (initError) {
     return (
-      <div className="layout">
-        <h1>Member lookup</h1>
-        <div className="alert error">{initError}</div>
+      <div className="app-shell">
+        <div className="top-bar">
+          <div className="brand">
+            <span className="brand-mark">JCA</span>
+            <span>Members</span>
+          </div>
+        </div>
+        <div className="content">
+          <div className="alert error">{initError}</div>
+        </div>
       </div>
     );
   }
 
   if (!appReady) {
     return (
-      <div className="layout">
-        <h1>Member lookup</h1>
-        <p className="sub">Starting…</p>
+      <div className="app-shell">
+        <div className="content">
+          <div className="splash">
+            <span className="brand-mark large">JCA</span>
+            <p className="muted">Starting…</p>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="layout">
-      <h1>Member lookup &amp; verify</h1>
-      <p className="sub">
-        Search by first name, last name, full name, email, or phone. New and edited records are
-        saved directly to <span className="mono">members</span> and tracked in{" "}
-        <span className="mono">member_changes</span>. Device id:{" "}
-        <span className="mono">{deviceId}</span>
-      </p>
-
-      <div className="card">
-        <div className="row">
-          <label className="field" style={{ flex: "2 1 280px" }}>
-            <span>Search</span>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="e.g. Neha, Smith, neha.smith1@example.com, 914612…"
-              autoComplete="off"
-            />
-          </label>
-          <button type="button" className="ghost" onClick={() => void refreshMembers()}>
-            Refresh data
-          </button>
-          <button type="button" className="ghost" onClick={onStartCreate}>
-            Add new user
-          </button>
-        </div>
-        <p style={{ margin: "0.65rem 0 0", color: "var(--muted)", fontSize: "0.88rem" }}>
-          {loadState === "loading" && "Loading members…"}
+    <div className="app-shell">
+      <header className="top-bar">
+        <button className="brand as-button" type="button" onClick={goSearch}>
+          <span className="brand-mark">JCA</span>
+          <span>Members</span>
+        </button>
+        <div className="top-actions">
           {loadState === "ok" && (
-            <>
-              <span className="badge">{members.length} members in cloud</span>
-              {query.trim() && (
-                <>
-                  {" "}
-                  · <span className="badge">{filtered.length} matches</span>
-                </>
-              )}
-            </>
+            <span className="badge">{members.length.toLocaleString()} members</span>
           )}
-        </p>
-        {loadState === "error" && loadError && (
-          <div className="alert error" style={{ marginTop: "0.65rem" }}>
-            {loadError}
-          </div>
-        )}
-      </div>
-
-      <div className="card">
-        <strong>Matching records</strong>
-        <p style={{ margin: "0.35rem 0 0.6rem", color: "var(--muted)", fontSize: "0.88rem" }}>
-          If several rows match, click one to load it into the form below.
-        </p>
-        <div className="results">
-          <table>
-            <thead>
-              <tr>
-                <th>#</th>
-                <th>Name</th>
-                <th>Email</th>
-                <th>Home</th>
-                <th>Membership</th>
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.slice(0, 200).map((m) => (
-                <tr
-                  key={m.id}
-                  className={m.id === selectedId ? "selected" : undefined}
-                  onClick={() => onSelectRow(m)}
-                >
-                  <td>{m.sl ?? "—"}</td>
-                  <td>
-                    {(m.firstName || "").trim()} {(m.lastName || "").trim()}
-                  </td>
-                  <td className="mono">{m.email || "—"}</td>
-                  <td className="mono">{m.homePhone || "—"}</td>
-                  <td className="mono">{m.membershipNumber ?? "—"}</td>
-                </tr>
-              ))}
-              {filtered.length === 0 && loadState === "ok" && (
-                <tr>
-                  <td colSpan={5} style={{ color: "var(--muted)" }}>
-                    No matches. Try another search or refresh data after import.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
+          <button type="button" className="ghost" onClick={() => void refreshMembers()}>
+            {loadState === "loading" ? "Refreshing…" : "Refresh"}
+          </button>
         </div>
-        {filtered.length > 200 && (
-          <p style={{ margin: "0.5rem 0 0", color: "var(--muted)", fontSize: "0.85rem" }}>
-            Showing first 200 matches. Refine your search to narrow results.
-          </p>
-        )}
-      </div>
+      </header>
 
-      <div className="card">
-        <strong>{isCreateMode ? "Add new user" : "Verify or edit"}</strong>
-        {!selected && !isCreateMode && (
-          <p style={{ margin: "0.5rem 0 0", color: "var(--muted)" }}>
-            Select a row above to load member details.
-          </p>
+      <main className="content">
+        {view === "search" && (
+          <SearchView
+            query={query}
+            setQuery={setQuery}
+            onSubmit={onSubmitSearch}
+            onAdd={onStartCreate}
+            loadState={loadState}
+            loadError={loadError}
+            memberCount={members.length}
+          />
         )}
-        {(selected || isCreateMode) && (
-          <>
-            <div className="grid-form" style={{ marginTop: "0.75rem" }}>
-              <label className="field">
-                <span>SL#</span>
-                <input
-                  type="number"
-                  value={form.sl ?? ""}
-                  onChange={(e) =>
-                    update("sl")(e.target.value === "" ? null : Number(e.target.value))
-                  }
-                />
-              </label>
-              <label className="field">
-                <span>Last</span>
-                <input value={form.lastName} onChange={(e) => update("lastName")(e.target.value)} />
-              </label>
-              <label className="field">
-                <span>First</span>
-                <input
-                  value={form.firstName}
-                  onChange={(e) => update("firstName")(e.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>Spouse</span>
-                <input value={form.spouse} onChange={(e) => update("spouse")(e.target.value)} />
-              </label>
-              <label className="field">
-                <span>Type</span>
-                <input
-                  value={form.membershipType}
-                  onChange={(e) => update("membershipType")(e.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>Membership #</span>
-                <input
-                  type="number"
-                  value={form.membershipNumber ?? ""}
-                  onChange={(e) =>
-                    update("membershipNumber")(
-                      e.target.value === "" ? null : Number(e.target.value),
-                    )
-                  }
-                />
-              </label>
-              <label className="field">
-                <span>Status</span>
-                <input value={form.status} onChange={(e) => update("status")(e.target.value)} />
-              </label>
-              <label className="field">
-                <span>Receipt</span>
-                <input
-                  type="number"
-                  value={form.receipt ?? ""}
-                  onChange={(e) =>
-                    update("receipt")(e.target.value === "" ? null : Number(e.target.value))
-                  }
-                />
-              </label>
-              <label className="field">
-                <span>Year</span>
-                <input
-                  type="number"
-                  value={form.year ?? ""}
-                  onChange={(e) =>
-                    update("year")(e.target.value === "" ? null : Number(e.target.value))
-                  }
-                />
-              </label>
-              <label className="field">
-                <span>Edited (ISO or text)</span>
-                <input value={form.editedAt} onChange={(e) => update("editedAt")(e.target.value)} />
-              </label>
-              <label className="field" style={{ gridColumn: "1 / -1" }}>
-                <span>Address</span>
-                <input value={form.address} onChange={(e) => update("address")(e.target.value)} />
-              </label>
-              <label className="field">
-                <span>Apt</span>
-                <input
-                  value={form.apartment}
-                  onChange={(e) => update("apartment")(e.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>City</span>
-                <input value={form.city} onChange={(e) => update("city")(e.target.value)} />
-              </label>
-              <label className="field">
-                <span>State</span>
-                <input value={form.state} onChange={(e) => update("state")(e.target.value)} />
-              </label>
-              <label className="field">
-                <span>ZIP</span>
-                <input value={form.zip} onChange={(e) => update("zip")(e.target.value)} />
-              </label>
-              <label className="field">
-                <span>Home phone</span>
-                <input
-                  value={form.homePhone}
-                  onChange={(e) => update("homePhone")(e.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>Business phone</span>
-                <input
-                  value={form.businessPhone}
-                  onChange={(e) => update("businessPhone")(e.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>Cell phone</span>
-                <input
-                  value={form.cellPhone}
-                  onChange={(e) => update("cellPhone")(e.target.value)}
-                />
-              </label>
-              <label className="field">
-                <span>Email</span>
-                <input value={form.email} onChange={(e) => update("email")(e.target.value)} />
-              </label>
-              <label className="field">
-                <span>Business</span>
-                <input value={form.business} onChange={(e) => update("business")(e.target.value)} />
-              </label>
-              <label className="field">
-                <span>Alternate phone</span>
-                <input
-                  value={form.alternatePhone}
-                  onChange={(e) => update("alternatePhone")(e.target.value)}
-                />
-              </label>
-              <label className="field" style={{ gridColumn: "1 / -1" }}>
-                <span>Child detail 1</span>
-                <textarea
-                  value={form.childDetail1}
-                  onChange={(e) => update("childDetail1")(e.target.value)}
-                />
-              </label>
-              <label className="field" style={{ gridColumn: "1 / -1" }}>
-                <span>Child detail 2</span>
-                <textarea
-                  value={form.childDetail2}
-                  onChange={(e) => update("childDetail2")(e.target.value)}
-                />
-              </label>
-              <label className="field" style={{ gridColumn: "1 / -1" }}>
-                <span>Child detail 3</span>
-                <textarea
-                  value={form.childDetail3}
-                  onChange={(e) => update("childDetail3")(e.target.value)}
-                />
-              </label>
-              <label className="field" style={{ gridColumn: "1 / -1" }}>
-                <span>Child detail 4</span>
-                <textarea
-                  value={form.childDetail4}
-                  onChange={(e) => update("childDetail4")(e.target.value)}
-                />
-              </label>
-            </div>
-            <div className="actions">
-              {isCreateMode && (
-                <button type="button" className="ghost" onClick={() => setIsCreateMode(false)}>
-                  Cancel
-                </button>
-              )}
-              <button
-                type="button"
-                className="primary"
-                disabled={saveState === "saving"}
-                onClick={() => void onSave()}
-              >
-                {isCreateMode ? "Create user" : "Save changes"}
-              </button>
-            </div>
-            {saveMessage && (
-              <div
-                className={saveState === "ok" ? "alert ok" : "alert error"}
-                style={{ marginTop: "0.65rem" }}
-              >
-                {saveMessage}
-              </div>
-            )}
-          </>
+
+        {view === "results" && (
+          <ResultsView
+            query={query}
+            setQuery={setQuery}
+            onSubmit={onSubmitSearch}
+            filtered={filtered}
+            showAll={showAllResults}
+            onShowAll={() => setShowAllResults(true)}
+            onSelect={onSelectMember}
+            onAdd={onStartCreate}
+            onBack={goSearch}
+          />
         )}
+
+        {view === "form" && (
+          <FormView
+            isCreateMode={isCreateMode}
+            selected={selected}
+            form={form}
+            update={update}
+            onSave={onSave}
+            onBack={query.trim() ? goResults : goSearch}
+            saveState={saveState}
+            saveMessage={saveMessage}
+          />
+        )}
+      </main>
+
+      <footer className="foot">
+        <span className="mono tiny">device · {deviceId?.slice(0, 8) ?? "…"}</span>
+      </footer>
+    </div>
+  );
+}
+
+function SearchView(props: {
+  query: string;
+  setQuery: (s: string) => void;
+  onSubmit: () => void;
+  onAdd: () => void;
+  loadState: "idle" | "loading" | "ok" | "error";
+  loadError: string | null;
+  memberCount: number;
+}) {
+  const { query, setQuery, onSubmit, onAdd, loadState, loadError, memberCount } = props;
+  return (
+    <div className="search-page">
+      <div className="hero">
+        <span className="brand-mark huge">JCA</span>
+        <h1 className="hero-title">Members Directory</h1>
+        <p className="hero-sub">
+          Search by name, email, or phone to verify and update member details.
+        </p>
+        <form
+          className="search-bar"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit();
+          }}
+        >
+          <svg viewBox="0 0 24 24" className="search-icon" aria-hidden>
+            <path
+              d="M21 20.3l-5.2-5.2a7 7 0 1 0-1.4 1.4L19.6 21l1.4-.7zM5 10.5a5.5 5.5 0 1 1 11 0 5.5 5.5 0 0 1-11 0z"
+              fill="currentColor"
+            />
+          </svg>
+          <input
+            autoFocus
+            type="search"
+            enterKeyHint="search"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Name, email, or phone…"
+            aria-label="Search members"
+          />
+          {query && (
+            <button
+              type="button"
+              className="clear-btn"
+              aria-label="Clear"
+              onClick={() => setQuery("")}
+            >
+              ×
+            </button>
+          )}
+        </form>
+        <div className="search-actions">
+          <button type="button" className="primary" onClick={onSubmit} disabled={!query.trim()}>
+            Search
+          </button>
+          <button type="button" className="ghost" onClick={onAdd}>
+            + Add new member
+          </button>
+        </div>
+        <div className="search-foot">
+          {loadState === "loading" && <span className="muted">Loading directory…</span>}
+          {loadState === "ok" && (
+            <span className="muted">
+              {memberCount.toLocaleString()} members ready to search
+            </span>
+          )}
+          {loadState === "error" && loadError && (
+            <span className="alert error inline">{loadError}</span>
+          )}
+        </div>
       </div>
     </div>
+  );
+}
+
+function ResultsView(props: {
+  query: string;
+  setQuery: (s: string) => void;
+  onSubmit: () => void;
+  filtered: Member[];
+  showAll: boolean;
+  onShowAll: () => void;
+  onSelect: (m: Member) => void;
+  onAdd: () => void;
+  onBack: () => void;
+}) {
+  const { query, setQuery, onSubmit, filtered, showAll, onShowAll, onSelect, onAdd, onBack } =
+    props;
+  const visible = showAll ? filtered.slice(0, 100) : filtered.slice(0, 5);
+  return (
+    <div className="results-page">
+      <div className="results-search">
+        <form
+          className="search-bar compact"
+          onSubmit={(e) => {
+            e.preventDefault();
+            onSubmit();
+          }}
+        >
+          <svg viewBox="0 0 24 24" className="search-icon" aria-hidden>
+            <path
+              d="M21 20.3l-5.2-5.2a7 7 0 1 0-1.4 1.4L19.6 21l1.4-.7zM5 10.5a5.5 5.5 0 1 1 11 0 5.5 5.5 0 0 1-11 0z"
+              fill="currentColor"
+            />
+          </svg>
+          <input
+            autoFocus
+            type="search"
+            enterKeyHint="search"
+            autoComplete="off"
+            autoCorrect="off"
+            autoCapitalize="off"
+            spellCheck={false}
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search name, email, or phone"
+          />
+          {query && (
+            <button
+              type="button"
+              className="clear-btn"
+              onClick={() => setQuery("")}
+              aria-label="Clear"
+            >
+              ×
+            </button>
+          )}
+        </form>
+        <button type="button" className="ghost" onClick={onBack}>
+          New search
+        </button>
+      </div>
+
+      <div className="results-summary">
+        <span>
+          <strong>{filtered.length.toLocaleString()}</strong>{" "}
+          {filtered.length === 1 ? "match" : "matches"} for "<em>{query}</em>"
+        </span>
+        <button type="button" className="ghost" onClick={onAdd}>
+          + Add new member
+        </button>
+      </div>
+
+      {filtered.length === 0 ? (
+        <div className="empty">
+          <h3>No members found</h3>
+          <p className="muted">
+            Try a different spelling, partial name, email, or last 4 digits of a phone number.
+          </p>
+          <button type="button" className="primary" onClick={onAdd}>
+            Add a new member
+          </button>
+        </div>
+      ) : (
+        <>
+          <ul className="card-list">
+            {visible.map((m) => (
+              <li key={m.id}>
+                <button
+                  type="button"
+                  className="member-card"
+                  onClick={() => onSelect(m)}
+                >
+                  <span className="avatar">{initials(m.firstName, m.lastName)}</span>
+                  <span className="body">
+                    <span className="name">{displayName(m)}</span>
+                    <span className="meta">
+                      {m.email && <span className="meta-item">{m.email}</span>}
+                      {primaryPhone(m) && (
+                        <span className="meta-item">{primaryPhone(m)}</span>
+                      )}
+                      {(m.city || m.state) && (
+                        <span className="meta-item">
+                          {[m.city, m.state].filter(Boolean).join(", ")}
+                        </span>
+                      )}
+                    </span>
+                  </span>
+                  <span className="tag">#{m.membershipNumber ?? "—"}</span>
+                </button>
+              </li>
+            ))}
+          </ul>
+          {!showAll && filtered.length > 5 && (
+            <div className="show-more">
+              <button type="button" className="ghost" onClick={onShowAll}>
+                Show {Math.min(filtered.length, 100) - 5} more
+              </button>
+            </div>
+          )}
+          {showAll && filtered.length > 100 && (
+            <p className="muted small">
+              Showing first 100 matches. Refine your search to narrow further.
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function FormView(props: {
+  isCreateMode: boolean;
+  selected: Member | null;
+  form: MemberForm;
+  update: <K extends keyof MemberForm>(key: K) => (value: MemberForm[K]) => void;
+  onSave: () => void;
+  onBack: () => void;
+  saveState: "idle" | "saving" | "ok" | "error";
+  saveMessage: string | null;
+}) {
+  const { isCreateMode, selected, form, update, onBack, saveState, saveMessage } = props;
+  const title = isCreateMode
+    ? "Add new member"
+    : selected
+      ? displayName(selected)
+      : "Member";
+  const subtitle = isCreateMode
+    ? "Fill in the member details below"
+    : selected
+      ? `Membership #${selected.membershipNumber ?? "—"}`
+      : "";
+
+  return (
+    <div className="form-page">
+      <div className="form-header">
+        <button type="button" className="back-btn" onClick={onBack}>
+          ← Back
+        </button>
+        <div className="form-title">
+          <span className="avatar large">
+            {isCreateMode ? "+" : initials(form.firstName, form.lastName)}
+          </span>
+          <div>
+            <h2>{title}</h2>
+            <p className="muted">{subtitle}</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="form-section">
+        <h3 className="section-title">Identity</h3>
+        <div className="grid-form">
+          <Field label="First name">
+            <input
+              autoComplete="given-name"
+              autoCapitalize="words"
+              value={form.firstName}
+              onChange={(e) => update("firstName")(e.target.value)}
+            />
+          </Field>
+          <Field label="Last name">
+            <input
+              autoComplete="family-name"
+              autoCapitalize="words"
+              value={form.lastName}
+              onChange={(e) => update("lastName")(e.target.value)}
+            />
+          </Field>
+          <Field label="Spouse">
+            <input
+              autoCapitalize="words"
+              value={form.spouse}
+              onChange={(e) => update("spouse")(e.target.value)}
+            />
+          </Field>
+          <Field label="Membership #">
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={form.membershipNumber ?? ""}
+              disabled={!isCreateMode}
+              onChange={(e) => {
+                const v = e.target.value.replace(/\D/g, "");
+                update("membershipNumber")(v === "" ? null : Number(v));
+              }}
+            />
+          </Field>
+          <Field label="Type">
+            <input
+              autoCapitalize="characters"
+              value={form.membershipType}
+              onChange={(e) => update("membershipType")(e.target.value)}
+            />
+          </Field>
+          <Field label="Status">
+            <input
+              value={form.status}
+              onChange={(e) => update("status")(e.target.value)}
+            />
+          </Field>
+          <Field label="SL #">
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={form.sl ?? ""}
+              onChange={(e) => {
+                const v = e.target.value.replace(/\D/g, "");
+                update("sl")(v === "" ? null : Number(v));
+              }}
+            />
+          </Field>
+          <Field label="Receipt">
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={form.receipt ?? ""}
+              onChange={(e) => {
+                const v = e.target.value.replace(/\D/g, "");
+                update("receipt")(v === "" ? null : Number(v));
+              }}
+            />
+          </Field>
+          <Field label="Year">
+            <input
+              type="text"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={form.year ?? ""}
+              onChange={(e) => {
+                const v = e.target.value.replace(/\D/g, "");
+                update("year")(v === "" ? null : Number(v));
+              }}
+            />
+          </Field>
+          <Field label="Edited (ISO or text)">
+            <input
+              value={form.editedAt}
+              onChange={(e) => update("editedAt")(e.target.value)}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <div className="form-section">
+        <h3 className="section-title">Address</h3>
+        <div className="grid-form">
+          <Field label="Street" wide>
+            <input
+              autoComplete="street-address"
+              autoCapitalize="words"
+              value={form.address}
+              onChange={(e) => update("address")(e.target.value)}
+            />
+          </Field>
+          <Field label="Apt / Unit">
+            <input
+              autoCapitalize="characters"
+              value={form.apartment}
+              onChange={(e) => update("apartment")(e.target.value)}
+            />
+          </Field>
+          <Field label="City">
+            <input
+              autoComplete="address-level2"
+              autoCapitalize="words"
+              value={form.city}
+              onChange={(e) => update("city")(e.target.value)}
+            />
+          </Field>
+          <Field label="State">
+            <input
+              autoComplete="address-level1"
+              autoCapitalize="characters"
+              maxLength={2}
+              value={form.state}
+              onChange={(e) => update("state")(e.target.value)}
+            />
+          </Field>
+          <Field label="ZIP">
+            <input
+              autoComplete="postal-code"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              value={form.zip}
+              onChange={(e) => update("zip")(e.target.value)}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <div className="form-section">
+        <h3 className="section-title">Contact</h3>
+        <div className="grid-form">
+          <Field label="Email" wide>
+            <input
+              type="email"
+              inputMode="email"
+              autoComplete="email"
+              autoCapitalize="none"
+              autoCorrect="off"
+              spellCheck={false}
+              value={form.email}
+              onChange={(e) => update("email")(e.target.value)}
+            />
+          </Field>
+          <Field label="Cell phone">
+            <input
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel"
+              value={form.cellPhone}
+              onChange={(e) => update("cellPhone")(e.target.value)}
+            />
+          </Field>
+          <Field label="Home phone">
+            <input
+              type="tel"
+              inputMode="tel"
+              autoComplete="tel-national"
+              value={form.homePhone}
+              onChange={(e) => update("homePhone")(e.target.value)}
+            />
+          </Field>
+          <Field label="Business phone">
+            <input
+              type="tel"
+              inputMode="tel"
+              value={form.businessPhone}
+              onChange={(e) => update("businessPhone")(e.target.value)}
+            />
+          </Field>
+          <Field label="Alternate phone">
+            <input
+              type="tel"
+              inputMode="tel"
+              value={form.alternatePhone}
+              onChange={(e) => update("alternatePhone")(e.target.value)}
+            />
+          </Field>
+          <Field label="Business" wide>
+            <input
+              autoCapitalize="words"
+              value={form.business}
+              onChange={(e) => update("business")(e.target.value)}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <div className="form-section">
+        <h3 className="section-title">Family / Notes</h3>
+        <div className="grid-form">
+          <Field label="Child detail 1" wide>
+            <textarea
+              value={form.childDetail1}
+              onChange={(e) => update("childDetail1")(e.target.value)}
+            />
+          </Field>
+          <Field label="Child detail 2" wide>
+            <textarea
+              value={form.childDetail2}
+              onChange={(e) => update("childDetail2")(e.target.value)}
+            />
+          </Field>
+          <Field label="Child detail 3" wide>
+            <textarea
+              value={form.childDetail3}
+              onChange={(e) => update("childDetail3")(e.target.value)}
+            />
+          </Field>
+          <Field label="Child detail 4" wide>
+            <textarea
+              value={form.childDetail4}
+              onChange={(e) => update("childDetail4")(e.target.value)}
+            />
+          </Field>
+        </div>
+      </div>
+
+      <div className="save-bar">
+        <button type="button" className="ghost" onClick={onBack}>
+          Cancel
+        </button>
+        <button
+          type="button"
+          className="primary"
+          disabled={saveState === "saving"}
+          onClick={() => void props.onSave()}
+        >
+          {saveState === "saving"
+            ? "Saving…"
+            : isCreateMode
+              ? "Create member"
+              : "Save changes"}
+        </button>
+      </div>
+
+      {saveMessage && (
+        <div className={saveState === "ok" ? "alert ok" : "alert error"}>{saveMessage}</div>
+      )}
+    </div>
+  );
+}
+
+function Field(props: { label: string; wide?: boolean; children: React.ReactNode }) {
+  return (
+    <label className={`field${props.wide ? " wide" : ""}`}>
+      <span>{props.label}</span>
+      {props.children}
+    </label>
   );
 }
