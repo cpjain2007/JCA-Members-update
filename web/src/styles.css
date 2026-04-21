@@ -507,6 +507,11 @@ button.ghost:hover:not(:disabled) {
   padding: 0.5rem 0;
 }
 
+.muted.centered {
+  text-align: center;
+  padding: 0.5rem 0.5rem 0;
+}
+
 .empty {
   text-align: center;
   padding: 3rem 1rem;

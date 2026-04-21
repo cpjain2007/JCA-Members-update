@@ -148,6 +148,25 @@ function primaryPhone(m: Member): string {
   return m.cellPhone || m.homePhone || m.businessPhone || m.alternatePhone || "";
 }
 
+function maskPhone(phone: string): string {
+  if (!phone) return "";
+  const digits = phone.replace(/\D/g, "");
+  if (digits.length <= 4) return phone;
+  const last4 = digits.slice(-4);
+  return `••• ••• ${last4}`;
+}
+
+function maskEmail(email: string): string {
+  if (!email) return "";
+  const trimmed = email.trim();
+  if (!trimmed) return "";
+  const atIdx = trimmed.indexOf("@");
+  const local = atIdx >= 0 ? trimmed.slice(0, atIdx) : trimmed;
+  const visible = local.slice(0, 4);
+  if (local.length <= 4 && atIdx < 0) return visible;
+  return `${visible}•••`;
+}
+
 export function App() {
   const [initError, setInitError] = useState<string | null>(null);
   const [appReady, setAppReady] = useState(false);
@@ -161,8 +180,6 @@ export function App() {
 
   const [view, setView] = useState<View>("search");
   const [query, setQuery] = useState("");
-  const [showAllResults, setShowAllResults] = useState(false);
-
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isCreateMode, setIsCreateMode] = useState(false);
   const [form, setForm] = useState<MemberForm>(emptyForm());
@@ -233,7 +250,6 @@ export function App() {
     setQuery("");
     setSelectedId(null);
     setIsCreateMode(false);
-    setShowAllResults(false);
     setSaveState("idle");
     setSaveMessage(null);
   };
@@ -248,7 +264,6 @@ export function App() {
 
   const onSubmitSearch = () => {
     if (!query.trim()) return;
-    setShowAllResults(false);
     setView("results");
   };
 
@@ -432,8 +447,6 @@ export function App() {
             setQuery={setQuery}
             onSubmit={onSubmitSearch}
             filtered={filtered}
-            showAll={showAllResults}
-            onShowAll={() => setShowAllResults(true)}
             onSelect={onSelectMember}
             onAdd={onStartCreate}
             onBack={goSearch}
@@ -540,20 +553,19 @@ function SearchView(props: {
   );
 }
 
+const MAX_RESULTS = 5;
+
 function ResultsView(props: {
   query: string;
   setQuery: (s: string) => void;
   onSubmit: () => void;
   filtered: Member[];
-  showAll: boolean;
-  onShowAll: () => void;
   onSelect: (m: Member) => void;
   onAdd: () => void;
   onBack: () => void;
 }) {
-  const { query, setQuery, onSubmit, filtered, showAll, onShowAll, onSelect, onAdd, onBack } =
-    props;
-  const visible = showAll ? filtered.slice(0, 100) : filtered.slice(0, 5);
+  const { query, setQuery, onSubmit, filtered, onSelect, onAdd, onBack } = props;
+  const visible = filtered.slice(0, MAX_RESULTS);
   return (
     <div className="results-page">
       <div className="results-search">
@@ -600,8 +612,18 @@ function ResultsView(props: {
 
       <div className="results-summary">
         <span>
-          <strong>{filtered.length.toLocaleString()}</strong>{" "}
-          {filtered.length === 1 ? "match" : "matches"} for "<em>{query}</em>"
+          {filtered.length > MAX_RESULTS ? (
+            <>
+              Showing top <strong>{MAX_RESULTS}</strong> of{" "}
+              <strong>{filtered.length.toLocaleString()}</strong> matches for "
+              <em>{query}</em>" · refine to narrow
+            </>
+          ) : (
+            <>
+              <strong>{filtered.length.toLocaleString()}</strong>{" "}
+              {filtered.length === 1 ? "match" : "matches"} for "<em>{query}</em>"
+            </>
+          )}
         </span>
         <button type="button" className="ghost" onClick={onAdd}>
           + Add new member
@@ -632,9 +654,15 @@ function ResultsView(props: {
                   <span className="body">
                     <span className="name">{displayName(m)}</span>
                     <span className="meta">
-                      {m.email && <span className="meta-item">{m.email}</span>}
+                      {m.email && (
+                        <span className="meta-item" title="Email (masked)">
+                          {maskEmail(m.email)}
+                        </span>
+                      )}
                       {primaryPhone(m) && (
-                        <span className="meta-item">{primaryPhone(m)}</span>
+                        <span className="meta-item" title="Phone (masked)">
+                          {maskPhone(primaryPhone(m))}
+                        </span>
                       )}
                       {(m.city || m.state) && (
                         <span className="meta-item">
@@ -648,16 +676,11 @@ function ResultsView(props: {
               </li>
             ))}
           </ul>
-          {!showAll && filtered.length > 5 && (
-            <div className="show-more">
-              <button type="button" className="ghost" onClick={onShowAll}>
-                Show {Math.min(filtered.length, 100) - 5} more
-              </button>
-            </div>
-          )}
-          {showAll && filtered.length > 100 && (
-            <p className="muted small">
-              Showing first 100 matches. Refine your search to narrow further.
+          {filtered.length > MAX_RESULTS && (
+            <p className="muted small centered">
+              Only the top {MAX_RESULTS} matches are shown. Refine your search (add
+              last name, more of the email, or last 4 digits of the phone) to find the
+              right member.
             </p>
           )}
         </>

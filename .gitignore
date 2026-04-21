@@ -17,3 +17,5 @@ web/.env.local
 web/.env.*.local
 
 .firebase/
+data/
+
