@@ -85,12 +85,26 @@ export const emptyForm = (): MemberForm => ({
   childDetail4: "",
 });
 
+/** First non-empty string among Firestore keys (handles legacy/Excel-style field names). */
+function stringField(
+  data: Record<string, unknown>,
+  key: string,
+  ...aliasKeys: string[]
+): string | null {
+  for (const k of [key, ...aliasKeys]) {
+    if (!(k in data) || data[k] == null) continue;
+    const s = String(data[k] as string | number | boolean).trim();
+    if (s) return s;
+  }
+  return null;
+}
+
 export function memberDocToMember(id: string, data: Record<string, unknown>): Member {
   return {
     id,
     sl: (data.sl as number | null) ?? null,
-    lastName: (data.lastName as string | null) ?? null,
-    firstName: (data.firstName as string | null) ?? null,
+    lastName: stringField(data, "lastName", "last_name", "LAST", "LastName", "last"),
+    firstName: stringField(data, "firstName", "first_name", "FIRST", "First", "first"),
     spouse: (data.spouse as string | null) ?? null,
     membershipType: (data.membershipType as string | null) ?? null,
     membershipNumber: (data.membershipNumber as number | null) ?? null,
@@ -116,5 +130,6 @@ export function memberDocToMember(id: string, data: Record<string, unknown>): Me
     phoneDigits: Array.isArray(data.phoneDigits)
       ? (data.phoneDigits as string[])
       : undefined,
+    searchText: stringField(data, "searchText", "search_text") ?? undefined,
   };
 }

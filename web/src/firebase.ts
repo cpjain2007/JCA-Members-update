@@ -1,4 +1,5 @@
 import { initializeApp, type FirebaseApp } from "firebase/app";
+import { browserLocalPersistence, getAuth, setPersistence, type Auth } from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
 function requireEnv(name: keyof ImportMetaEnv): string {
@@ -27,3 +28,21 @@ export function getFirebaseApp(): FirebaseApp {
 }
 
 export const db = () => getFirestore(getFirebaseApp());
+
+let authInstance: Auth | null = null;
+let persistencePromise: Promise<void> | null = null;
+
+export function auth(): Auth {
+  if (!authInstance) {
+    authInstance = getAuth(getFirebaseApp());
+    persistencePromise = setPersistence(authInstance, browserLocalPersistence).catch(
+      () => undefined,
+    );
+  }
+  return authInstance;
+}
+
+export function authReady(): Promise<void> {
+  auth();
+  return persistencePromise ?? Promise.resolve();
+}

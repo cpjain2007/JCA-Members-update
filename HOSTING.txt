@@ -1,0 +1,304 @@
+================================================================================
+JCA MEMBERS UPDATE — HOSTING GUIDE
+================================================================================
+
+This document covers three things:
+  1. What infrastructure you need to run the app
+  2. How to pick and configure a domain name
+  3. Step-by-step deployment instructions
+
+The app has two pieces that need to run:
+  (a) The React web frontend (static HTML/CSS/JS)   -> a web host
+  (b) The data backend (Firestore cloud database)   -> Google/Firebase
+
+The frontend talks directly to Firestore from the browser using the Firebase
+Web SDK. There is no custom backend server — that keeps hosting very cheap.
+
+
+================================================================================
+PART 1 — INFRASTRUCTURE OPTIONS (PICK ONE)
+================================================================================
+
+--------------------------------------------------------------------------------
+OPTION A — Firebase Hosting + Firestore   [RECOMMENDED, CURRENT SETUP]
+--------------------------------------------------------------------------------
+What you get:
+  - Global CDN, automatic HTTPS, SPA routing
+  - 10 GB transfer/month, 360 MB storage free
+  - Firestore free tier: 1 GB storage, 50k reads/day, 20k writes/day,
+    20k deletes/day
+  - Already working today at https://jca-member-portal-9f2k.web.app
+
+Who this fits:
+  - Any org with up to a few thousand active members and moderate edits
+  - Teams that do not want to run servers
+
+Cost: $0/month at this scale (only the custom domain costs ~$12/year).
+
+Required:
+  - A Google account
+  - A Firebase project (already created: jca-member-portal-9f2k)
+
+
+--------------------------------------------------------------------------------
+OPTION B — Self-hosted on a VPS using Docker
+--------------------------------------------------------------------------------
+What you get:
+  - Full control of the machine
+  - Can put the app behind a VPN / private network
+  - Ship updates via `docker compose up -d --build`
+
+Who this fits:
+  - Teams who prefer owning their infrastructure
+  - People who already run other services on a VPS
+
+Recommended providers (small, reliable, cheap):
+  - Hetzner Cloud       ~$4–5/mo    (best value in EU/US)
+  - DigitalOcean        ~$6/mo      (easiest UX)
+  - Linode / Akamai     ~$5/mo
+  - Vultr               ~$5/mo
+  - Oracle Cloud Free   $0          (free tier ARM box, if you can get one)
+
+Minimum machine specs:
+  - 1 vCPU
+  - 1 GB RAM  (2 GB preferred)
+  - 25 GB SSD
+  - Ubuntu 22.04 LTS or Debian 12
+
+You still need Firestore as the database (the frontend uses the Firebase
+Web SDK). If you want to avoid Firebase entirely, the project would need a
+new backend — that is a bigger change; ask before pursuing it.
+
+Cost: ~$5–10/month VPS + ~$12/year domain.
+
+
+--------------------------------------------------------------------------------
+OPTION C — Google Cloud Run (serverless container)
+--------------------------------------------------------------------------------
+What you get:
+  - Runs the same Docker image as option B, but scales to zero when idle
+  - Pay only per request
+  - Still uses Firestore
+
+Cost: usually $0–$5/month at low traffic. Requires a Blaze (pay-as-you-go)
+Firebase/GCP billing account with a credit card on file.
+
+
+--------------------------------------------------------------------------------
+OPTION D — Netlify / Vercel + Firestore
+--------------------------------------------------------------------------------
+Similar to Option A, different vendor. Free tiers are generous. Use the
+same web Docker build output (or let them build from GitHub automatically).
+
+Cost: $0/month + $12/year domain.
+
+
+================================================================================
+PART 2 — DOMAIN SELECTION & DNS
+================================================================================
+
+You do not need a custom domain — the app works on the free Firebase
+subdomain https://jca-member-portal-9f2k.web.app. Add a custom domain only
+if you want a shorter, branded URL.
+
+--------------------------------------------------------------------------------
+Where to buy a domain
+--------------------------------------------------------------------------------
+Registrar        Price (.com/.org, /year)    Notes
+-----------      --------------------------   ----------------------------------
+Cloudflare       $10–12                       At-cost pricing, best DNS tools
+Porkbun          $9–11                        Low renewal prices, clean UI
+Namecheap        $10–13                       Popular, discount first year
+Google/Squarespace  $12–14                    Easy if you already use Google
+GoDaddy          $15–20                       Avoid unless you already have one
+
+Recommended: Cloudflare or Porkbun for simplicity and fair renewal prices.
+
+--------------------------------------------------------------------------------
+Suggested domain names (pick whichever is available)
+--------------------------------------------------------------------------------
+  jcamembers.org        (org is a good fit for an association)
+  jca-members.com
+  jcadirectory.org
+  jcadata.org
+  jca-update.com
+  members.jca.org       (if you already own jca.org, just use a subdomain)
+
+Use the registrar's search to check availability before buying.
+
+--------------------------------------------------------------------------------
+Pointing a domain at Firebase Hosting (10 min)
+--------------------------------------------------------------------------------
+1. Buy the domain at your registrar.
+2. In Firebase Console: Hosting -> Add custom domain -> enter
+   yourdomain.org (and optionally www.yourdomain.org).
+3. Firebase shows 1–2 DNS records to add. They look like:
+       A      @      199.36.158.100
+       A      @      199.36.158.101
+   (or a TXT record for verification first).
+4. Log into your registrar -> DNS settings -> add those exact records.
+5. Wait 15–30 minutes. Firebase provisions a free HTTPS certificate.
+6. The site is now live at https://yourdomain.org.
+
+If you later want to move hosts, you only need to update these DNS records.
+
+
+================================================================================
+PART 3 — DEPLOYMENT INSTRUCTIONS
+================================================================================
+
+Everything needed is in the repo:
+  GitHub:   https://github.com/cpjain2007/JCA-Members-update
+  Zip:      JCA_Members_docker_bundle.zip  (clean source bundle)
+
+--------------------------------------------------------------------------------
+3A. Deploy to Firebase Hosting (matches the current live site)
+--------------------------------------------------------------------------------
+One-time setup (on whichever machine will push deploys):
+
+  1. Install Node.js 20 LTS:                https://nodejs.org
+  2. Install the Firebase CLI:
+         npm install -g firebase-tools
+  3. Log in:
+         firebase login
+     (opens a browser, sign in with the Google account that owns the
+      Firebase project)
+  4. Clone the repo:
+         git clone https://github.com/cpjain2007/JCA-Members-update.git
+         cd JCA-Members-update
+  5. Configure the web app:
+         cd web
+         cp env.example .env.local
+         (edit .env.local with the Firebase web-app config values from
+          Firebase Console -> Project settings -> Your apps)
+         cd ..
+
+First deploy and every update after it:
+
+  cd web
+  npm install              # first time only
+  npm run build
+  cd ..
+  firebase deploy --only hosting --project <your-project-id>
+
+That's it. The new version is live within ~10 seconds.
+
+Optional — import an Excel file into Firestore:
+
+  python scripts/import_members_firestore.py \
+      --config config/import.json
+  (requires serviceAccount.json in the repo root, see DOCKER.md)
+
+Optional — export all changes back to Excel:
+
+  python scripts/export_member_changes.py
+
+
+--------------------------------------------------------------------------------
+3B. Deploy to a VPS with Docker (option B above)
+--------------------------------------------------------------------------------
+Assumes a fresh Ubuntu 22.04 VPS with a public IP and root/sudo access.
+
+  1. SSH into the VPS.
+  2. Install Docker + Compose:
+         curl -fsSL https://get.docker.com | sh
+         sudo usermod -aG docker $USER
+         newgrp docker
+  3. Clone the repo:
+         git clone https://github.com/cpjain2007/JCA-Members-update.git
+         cd JCA-Members-update
+  4. Configure:
+         cp .env.example .env
+         (edit .env with Firebase web-app config values)
+         (optional) place serviceAccount.json in the repo root if you
+                    need the Python CLI to run inside the scripts container.
+         mkdir -p data
+  5. Build and start:
+         docker compose up -d --build web
+         (now listens on the VPS's port 8080)
+  6. Put a reverse proxy in front for HTTPS. Easiest is Caddy:
+         sudo apt install -y caddy
+         sudo nano /etc/caddy/Caddyfile
+     Paste:
+         yourdomain.org {
+             reverse_proxy localhost:8080
+         }
+     Then:
+         sudo systemctl restart caddy
+     Caddy automatically obtains and renews a free HTTPS certificate.
+  7. Point your domain's A record at the VPS public IP (see Part 2).
+
+To update later:
+         cd JCA-Members-update
+         git pull
+         docker compose build web
+         docker compose up -d web
+
+
+--------------------------------------------------------------------------------
+3C. Deploy to Google Cloud Run (option C above)
+--------------------------------------------------------------------------------
+  1. Enable Cloud Run and Artifact Registry in your GCP project.
+  2. Build and push the web image:
+         gcloud builds submit ./web --tag \
+             us-central1-docker.pkg.dev/<PROJECT>/jca/web:latest
+  3. Deploy:
+         gcloud run deploy jca-web \
+             --image us-central1-docker.pkg.dev/<PROJECT>/jca/web:latest \
+             --region us-central1 \
+             --allow-unauthenticated \
+             --set-env-vars VITE_FIREBASE_API_KEY=...,VITE_FIREBASE_AUTH_DOMAIN=...
+  4. Map a custom domain from the Cloud Run console if desired.
+
+Note: Cloud Run reads env vars at runtime, but the Vite bundle bakes them
+at build time. For Cloud Run, pass them with --build-arg to the image
+build instead, OR keep using Firebase Hosting (option A) — that is the
+path of least resistance.
+
+
+================================================================================
+PART 4 — RUNTIME SECRETS & CONFIGURATION
+================================================================================
+
+Two sets of credentials are involved. Keep them straight:
+
+  VITE_FIREBASE_*   (PUBLIC)
+      The Firebase Web SDK config. It is shipped to every browser by design.
+      Firestore security rules (firestore.rules) control what the client
+      is allowed to do with these values.
+      Where: web/.env.local for local dev, build-arg / env var for Docker,
+             .env for docker compose.
+
+  serviceAccount.json   (PRIVATE, NEVER COMMIT)
+      A Firebase Admin SDK key. It grants full server-side access.
+      Only needed by the Python CLI (import / export scripts).
+      Where: repo root on the machine running the scripts.
+
+If serviceAccount.json ever leaks, go to the Firebase Console -> Project
+settings -> Service accounts and revoke the key immediately.
+
+
+================================================================================
+PART 5 — QUICK COMPARISON (TL;DR)
+================================================================================
+
+  If you want zero-admin, cheap, already-working .... Option A (Firebase)
+  If you want full control on your own server ....... Option B (Docker VPS)
+  If you want pay-per-request serverless ............ Option C (Cloud Run)
+  If you want a different free static host .......... Option D (Netlify/Vercel)
+
+For 99% of members-directory use cases, stay on Option A and add a
+custom domain when you're ready.
+
+
+================================================================================
+CONTACT / HELP
+================================================================================
+
+  Repo:       https://github.com/cpjain2007/JCA-Members-update
+  Docs:       DOCKER.md in the repo root
+  Live site:  https://jca-member-portal-9f2k.web.app
+  QR code:    JCA_Members_QR.png in the repo root
+
+If anything here doesn't match what you see in the repo, the repo is the
+source of truth — this file captures a snapshot of the recommended setup.

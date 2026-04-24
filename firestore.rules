@@ -1,10 +1,11 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // Master list: public read for the lookup UI (writes only via Admin import script).
+    // Master list: public read for search; writes require an authenticated session.
     match /members/{memberId} {
       allow read: if true;
-      allow create, update: if request.resource.data.keys().hasAll(
+      allow create, update: if request.auth != null
+        && request.resource.data.keys().hasAll(
           ['membershipNumber', 'firstName', 'lastName']
         )
         && (request.resource.data.membershipNumber is int
@@ -14,10 +15,11 @@ service cloud.firestore {
       allow delete: if false;
     }
 
-    // Track only changed/new members for easy export.
+    // Track only changed/new members for easy export; writes require auth, reads only via Admin SDK.
     match /member_changes/{memberId} {
       allow read: if false;
-      allow create, update: if request.resource.data.keys().hasAll(
+      allow create, update: if request.auth != null
+        && request.resource.data.keys().hasAll(
           ['membershipNumber', 'firstName', 'lastName', 'changeType']
         )
         && (request.resource.data.membershipNumber is int

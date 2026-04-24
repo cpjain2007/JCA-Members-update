@@ -1,3 +1,4 @@
+import type { User } from "firebase/auth";
 import {
   collection,
   doc,
@@ -7,8 +8,16 @@ import {
   setDoc,
 } from "firebase/firestore";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { db, getFirebaseApp } from "./firebase";
+import {
+  completeSignInFromUrl,
+  normalizeEmail,
+  signOut,
+  watchAuthState,
+} from "./auth";
+import { authReady, db, getFirebaseApp } from "./firebase";
+import { userPhoneMatchesMember, maskEmailLast4AndDomain } from "./phoneAuth";
 import { memberMatchesQuery } from "./search";
+import { VerifySignInView } from "./VerifySignInView";
 import {
   emptyForm,
   memberDocToMember,
@@ -19,8 +28,40 @@ import {
 const MEMBERS_COLLECTION = "members";
 const MEMBER_CHANGES_COLLECTION = "member_changes";
 const DEVICE_STORAGE_KEY = "jca_member_device_id";
+const AUTH_GATE_KEY = "jca_auth_gate";
 
-type View = "search" | "results" | "form";
+type View = "search" | "results" | "form" | "auth";
+
+type AuthGatePayload = { kind: "edit"; memberId: string } | { kind: "create" };
+
+function readAuthGate(): AuthGatePayload | null {
+  try {
+    const raw = window.sessionStorage.getItem(AUTH_GATE_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw) as AuthGatePayload;
+    if (v?.kind === "edit" && typeof v.memberId === "string") return v;
+    if (v?.kind === "create") return { kind: "create" };
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function writeAuthGate(payload: AuthGatePayload) {
+  try {
+    window.sessionStorage.setItem(AUTH_GATE_KEY, JSON.stringify(payload));
+  } catch {
+    /* ignore */
+  }
+}
+
+function clearAuthGate() {
+  try {
+    window.sessionStorage.removeItem(AUTH_GATE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
 
 function getOrCreateDeviceId(): string {
   try {
@@ -156,21 +197,16 @@ function maskPhone(phone: string): string {
   return `••• ••• ${last4}`;
 }
 
-function maskEmail(email: string): string {
-  if (!email) return "";
-  const trimmed = email.trim();
-  if (!trimmed) return "";
-  const atIdx = trimmed.indexOf("@");
-  const local = atIdx >= 0 ? trimmed.slice(0, atIdx) : trimmed;
-  const visible = local.slice(0, 4);
-  if (local.length <= 4 && atIdx < 0) return visible;
-  return `${visible}•••`;
-}
-
 export function App() {
   const [initError, setInitError] = useState<string | null>(null);
   const [appReady, setAppReady] = useState(false);
   const [deviceId, setDeviceId] = useState<string | null>(null);
+
+  const [authState, setAuthState] = useState<"loading" | "signed-out" | "signed-in">(
+    "loading",
+  );
+  const [user, setUser] = useState<User | null>(null);
+  const [authError, setAuthError] = useState<string | null>(null);
 
   const [members, setMembers] = useState<Member[]>([]);
   const [loadState, setLoadState] = useState<"idle" | "loading" | "ok" | "error">(
@@ -190,13 +226,44 @@ export function App() {
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
   useEffect(() => {
-    try {
-      getFirebaseApp();
-      setDeviceId(getOrCreateDeviceId());
-      setAppReady(true);
-    } catch (e) {
-      setInitError(e instanceof Error ? e.message : String(e));
-    }
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+
+    (async () => {
+      try {
+        getFirebaseApp();
+        setDeviceId(getOrCreateDeviceId());
+        await authReady();
+
+        try {
+          await completeSignInFromUrl(() =>
+            window.prompt(
+              "Confirm the email address you used to request this sign-in link:",
+            ),
+          );
+        } catch (e) {
+          if (!cancelled) {
+            setAuthError(e instanceof Error ? e.message : String(e));
+          }
+        }
+
+        if (cancelled) return;
+        unsubscribe = watchAuthState((u) => {
+          setUser(u);
+          setAuthState(u ? "signed-in" : "signed-out");
+        });
+        setAppReady(true);
+      } catch (e) {
+        if (!cancelled) {
+          setInitError(e instanceof Error ? e.message : String(e));
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      if (unsubscribe) unsubscribe();
+    };
   }, []);
 
   const refreshMembers = useCallback(async () => {
@@ -226,11 +293,69 @@ export function App() {
     void refreshMembers();
   }, [appReady, refreshMembers]);
 
+  // After sign-in, resume add or (for edit) only if identity matches the member on file.
+  useEffect(() => {
+    if (!appReady || authState !== "signed-in" || !user) return;
+    if (loadState === "error") {
+      if (readAuthGate()) clearAuthGate();
+      return;
+    }
+    if (loadState !== "ok") return;
+
+    const gate = readAuthGate();
+    if (!gate) return;
+
+    if (gate.kind === "create") {
+      clearAuthGate();
+      const nextSl = members.reduce((max, m) => Math.max(max, m.sl ?? 0), 0) + 1;
+      setSelectedId(null);
+      setIsCreateMode(true);
+      setForm({
+        ...emptyForm(),
+        sl: nextSl,
+        membershipType: "LM",
+        year: new Date().getFullYear(),
+      });
+      setView("form");
+      return;
+    }
+
+    const mem = members.find((m) => m.id === gate.memberId);
+    if (!mem) {
+      void signOut();
+      setAuthError("Could not find that member. Try searching again.");
+      return;
+    }
+
+    const em = mem.email?.trim() ? normalizeEmail(mem.email) : "";
+    const emailMatch = !!em && user.email && normalizeEmail(user.email) === em;
+    const phoneMatch = user.phoneNumber ? userPhoneMatchesMember(user.phoneNumber, mem) : false;
+
+    if (!emailMatch && !phoneMatch) {
+      void signOut();
+      setAuthError("Sign in with the same email or phone we have on file for this person.");
+      setView("auth");
+      return;
+    }
+
+    clearAuthGate();
+    setSelectedId(gate.memberId);
+    setIsCreateMode(false);
+    setView("form");
+  }, [appReady, authState, user, loadState, members]);
+
   const filtered = useMemo(() => {
     const q = query.trim();
     if (!q) return [] as Member[];
     return members.filter((m) => memberMatchesQuery(m, q));
   }, [members, query]);
+
+  const memberForAuth = useMemo(() => {
+    if (view !== "auth") return null;
+    const g = readAuthGate();
+    if (!g || g.kind !== "edit") return null;
+    return members.find((m) => m.id === g.memberId) ?? null;
+  }, [members, view]);
 
   const selected = useMemo(
     () => members.find((m) => m.id === selectedId) ?? null,
@@ -246,6 +371,7 @@ export function App() {
   }, [selected, isCreateMode]);
 
   const goSearch = () => {
+    clearAuthGate();
     setView("search");
     setQuery("");
     setSelectedId(null);
@@ -255,6 +381,7 @@ export function App() {
   };
 
   const goResults = () => {
+    clearAuthGate();
     setView("results");
     setSelectedId(null);
     setIsCreateMode(false);
@@ -268,30 +395,52 @@ export function App() {
   };
 
   const onSelectMember = (m: Member) => {
-    setSelectedId(m.id);
-    setIsCreateMode(false);
     setSaveState("idle");
     setSaveMessage(null);
-    setView("form");
+    if (user) {
+      setSelectedId(m.id);
+      setIsCreateMode(false);
+      setView("form");
+    } else {
+      // Do not set selectedId or load form data until after email sign-in.
+      setSelectedId(null);
+      setIsCreateMode(false);
+      writeAuthGate({ kind: "edit", memberId: m.id });
+      setView("auth");
+    }
   };
 
   const onStartCreate = () => {
-    const nextSl = members.reduce((max, m) => Math.max(max, m.sl ?? 0), 0) + 1;
-    setSelectedId(null);
-    setIsCreateMode(true);
-    setForm({
-      ...emptyForm(),
-      sl: nextSl,
-      membershipType: "LM",
-      year: new Date().getFullYear(),
-    });
     setSaveState("idle");
     setSaveMessage(null);
-    setView("form");
+    if (user) {
+      const nextSl = members.reduce((max, m) => Math.max(max, m.sl ?? 0), 0) + 1;
+      setSelectedId(null);
+      setIsCreateMode(true);
+      setForm({
+        ...emptyForm(),
+        sl: nextSl,
+        membershipType: "LM",
+        year: new Date().getFullYear(),
+      });
+      setView("form");
+    } else {
+      // No form draft in memory until the user is verified.
+      setSelectedId(null);
+      setIsCreateMode(false);
+      setForm(emptyForm());
+      writeAuthGate({ kind: "create" });
+      setView("auth");
+    }
   };
 
   const onSave = async () => {
     setSaveMessage(null);
+    if (!user) {
+      setSaveState("error");
+      setSaveMessage("Sign in to save changes.");
+      return;
+    }
     if (form.membershipNumber === null || form.membershipNumber === undefined) {
       setSaveState("error");
       setSaveMessage("Membership number is required.");
@@ -382,6 +531,22 @@ export function App() {
       setForm((prev) => ({ ...prev, [key]: value }));
     };
 
+  const goBackFromAuth = () => {
+    clearAuthGate();
+    setSelectedId(null);
+    setIsCreateMode(false);
+    setView(query.trim() ? "results" : "search");
+  };
+
+  useEffect(() => {
+    if (!appReady) return;
+    if (authState === "signed-out" && view === "form") {
+      setView(query.trim() ? "results" : "search");
+      setSelectedId(null);
+      setIsCreateMode(false);
+    }
+  }, [appReady, authState, view, query]);
+
   if (initError) {
     return (
       <div className="app-shell">
@@ -398,7 +563,7 @@ export function App() {
     );
   }
 
-  if (!appReady) {
+  if (!appReady || authState === "loading") {
     return (
       <div className="app-shell">
         <div className="content">
@@ -414,7 +579,11 @@ export function App() {
   return (
     <div className="app-shell">
       <header className="top-bar">
-        <button className="brand as-button" type="button" onClick={goSearch}>
+        <button
+          className="brand as-button"
+          type="button"
+          onClick={view === "auth" ? goBackFromAuth : goSearch}
+        >
           <span className="brand-mark">JCA</span>
           <span>Members</span>
         </button>
@@ -425,6 +594,22 @@ export function App() {
           <button type="button" className="ghost" onClick={() => void refreshMembers()}>
             {loadState === "loading" ? "Refreshing…" : "Refresh"}
           </button>
+          {user?.email && (
+            <>
+              <span className="badge mono" title={user.email}>
+                {user.email}
+              </span>
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => {
+                  void signOut();
+                }}
+              >
+                Sign out
+              </button>
+            </>
+          )}
         </div>
       </header>
 
@@ -450,10 +635,12 @@ export function App() {
             onSelect={onSelectMember}
             onAdd={onStartCreate}
             onBack={goSearch}
+            showLocationInList={!!user}
+            showVerifyHint={!user}
           />
         )}
 
-        {view === "form" && (
+        {view === "form" && user && (
           <FormView
             isCreateMode={isCreateMode}
             selected={selected}
@@ -463,6 +650,17 @@ export function App() {
             onBack={query.trim() ? goResults : goSearch}
             saveState={saveState}
             saveMessage={saveMessage}
+          />
+        )}
+
+        {view === "auth" && (
+          <VerifySignInView
+            intent={readAuthGate()?.kind === "create" ? "add" : "edit"}
+            member={readAuthGate()?.kind === "edit" ? memberForAuth : null}
+            authError={authError}
+            clearAuthError={() => setAuthError(null)}
+            onBack={goBackFromAuth}
+            backLabel={query.trim() ? "← Back to matches" : "← Back to search"}
           />
         )}
       </main>
@@ -490,7 +688,9 @@ function SearchView(props: {
         <span className="brand-mark huge">JCA</span>
         <h1 className="hero-title">Members Directory</h1>
         <p className="hero-sub">
-          Search by name, email, or phone to verify and update member details.
+          Search by name, email, or phone. You’ll see up to <strong>5</strong> matches. After you
+          choose your record (or add new), we ask you to verify your email—then you can view and
+          edit full details.
         </p>
         <form
           className="search-bar"
@@ -563,8 +763,21 @@ function ResultsView(props: {
   onSelect: (m: Member) => void;
   onAdd: () => void;
   onBack: () => void;
+  /** City/state are hidden in the list until the user is signed in (full details only after email verification). */
+  showLocationInList: boolean;
+  showVerifyHint: boolean;
 }) {
-  const { query, setQuery, onSubmit, filtered, onSelect, onAdd, onBack } = props;
+  const {
+    query,
+    setQuery,
+    onSubmit,
+    filtered,
+    onSelect,
+    onAdd,
+    onBack,
+    showLocationInList,
+    showVerifyHint,
+  } = props;
   const visible = filtered.slice(0, MAX_RESULTS);
   return (
     <div className="results-page">
@@ -630,6 +843,13 @@ function ResultsView(props: {
         </button>
       </div>
 
+      {showVerifyHint && (
+        <p className="muted small" style={{ margin: "0 0 0.75rem" }}>
+          Tap your row or <strong>+ Add new member</strong>, then verify your email. Full address and
+          contact details appear <em>after</em> you complete sign-in.
+        </p>
+      )}
+
       {filtered.length === 0 ? (
         <div className="empty">
           <h3>No members found</h3>
@@ -655,8 +875,8 @@ function ResultsView(props: {
                     <span className="name">{displayName(m)}</span>
                     <span className="meta">
                       {m.email && (
-                        <span className="meta-item" title="Email (masked)">
-                          {maskEmail(m.email)}
+                        <span className="meta-item" title="Email (partially masked)">
+                          {m.email ? maskEmailLast4AndDomain(m.email) : ""}
                         </span>
                       )}
                       {primaryPhone(m) && (
@@ -664,7 +884,7 @@ function ResultsView(props: {
                           {maskPhone(primaryPhone(m))}
                         </span>
                       )}
-                      {(m.city || m.state) && (
+                      {showLocationInList && (m.city || m.state) && (
                         <span className="meta-item">
                           {[m.city, m.state].filter(Boolean).join(", ")}
                         </span>
